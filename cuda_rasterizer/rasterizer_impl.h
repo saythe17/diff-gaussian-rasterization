@@ -1,12 +1,5 @@
 /*
- * Copyright (C) 2023, Inria
- * GRAPHDECO research group, https://team.inria.fr/graphdeco
- * All rights reserved.
- *
- * This software is free for non-commercial, research and evaluation use 
- * under the terms of the LICENSE.md file.
- *
- * For inquiries contact  george.drettakis@inria.fr
+ * Additive 2D Gaussian Rasterizer — internal state structs.
  */
 
 #pragma once
@@ -29,25 +22,19 @@ namespace CudaRasterizer
 	struct GeometryState
 	{
 		size_t scan_size;
-		float* depths;
-		char* scanning_space;
-		bool* clamped;
 		int* internal_radii;
-		float2* means2D;
-		float* cov3D;
-		float4* conic_opacity;
-		float* rgb;
-		uint32_t* point_offsets;
+		float2* means2D;           // pixel coords (packed)
+		float4* conic_weight;      // (p00, p01, p11, weight)
 		uint32_t* tiles_touched;
+		uint32_t* point_offsets;
+		char* scanning_space;
 
 		static GeometryState fromChunk(char*& chunk, size_t P);
 	};
 
 	struct ImageState
 	{
-		uint2* ranges;
-		uint32_t* n_contrib;
-		float* accum_alpha;
+		uint2* ranges;             // per-tile start/end in sorted list
 
 		static ImageState fromChunk(char*& chunk, size_t N);
 	};
@@ -64,7 +51,7 @@ namespace CudaRasterizer
 		static BinningState fromChunk(char*& chunk, size_t P);
 	};
 
-	template<typename T> 
+	template<typename T>
 	size_t required(size_t P)
 	{
 		char* size = nullptr;
