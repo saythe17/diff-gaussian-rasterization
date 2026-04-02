@@ -43,7 +43,8 @@ namespace CudaRasterizer
 			float* dL_dconics,
 			float* dL_dweights,
 			float* dL_dcolors,
-			bool debug);
+			bool debug,
+			cudaStream_t stream = nullptr);
 	};
 };
 

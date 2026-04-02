@@ -4,6 +4,10 @@
  * Much simpler than original 3DGS backward because additive blending means
  * each Gaussian's gradient is independent (no transmittance coupling).
  * No reverse traversal or T-restoration needed.
+ *
+ * Optimizations over naive implementation:
+ *   - Warp-level reduction before atomicAdd (~32x fewer atomics)
+ *   - Colors cached in shared memory (avoid global memory reads in inner loop)
  */
 
 #include "backward.h"
@@ -35,6 +39,9 @@ renderBackwardCUDA(
 
 	bool inside = pix.x < W && pix.y < H;
 
+	// Warp info for reduction
+	const unsigned int lane = block.thread_rank() & 31;
+
 	// Load per-pixel output gradient
 	float dL_dC[CHANNELS] = { 0 };
 	if (inside)
@@ -48,10 +55,11 @@ renderBackwardCUDA(
 	const int rounds = ((range.y - range.x + BLOCK_SIZE - 1) / BLOCK_SIZE);
 	int toDo = range.y - range.x;
 
-	// Shared memory — same batch loading pattern as forward
+	// Shared memory — batch loading pattern as forward, plus colors (D)
 	__shared__ int collected_id[BLOCK_SIZE];
 	__shared__ float2 collected_xy[BLOCK_SIZE];
 	__shared__ float4 collected_cw[BLOCK_SIZE];
+	__shared__ float collected_colors[BLOCK_SIZE * CHANNELS];
 
 	for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
 	{
@@ -63,13 +71,16 @@ renderBackwardCUDA(
 			collected_id[block.thread_rank()] = coll_id;
 			collected_xy[block.thread_rank()] = means2D[coll_id];
 			collected_cw[block.thread_rank()] = conic_weight[coll_id];
+			// Cache colors in shared memory
+			for (int ch = 0; ch < CHANNELS; ch++)
+				collected_colors[block.thread_rank() * CHANNELS + ch] = colors[coll_id * CHANNELS + ch];
 		}
 		block.sync();
 
 		for (int j = 0; j < min(BLOCK_SIZE, toDo); j++)
 		{
-			if (!inside)
-				continue;
+			// NOTE: no 'continue' for !inside — all threads must participate
+			// in warp shuffles. Invalid threads contribute 0.
 
 			float2 xy = collected_xy[j];
 			float2 d = { xy.x - pixf.x, xy.y - pixf.y };
@@ -77,42 +88,63 @@ renderBackwardCUDA(
 			float p00 = cw.x, p01 = cw.y, p11 = cw.z, w = cw.w;
 
 			float power = -0.5f * (p00 * d.x * d.x + p11 * d.y * d.y) - p01 * d.x * d.y;
-			if (power > 0.0f)
-				continue;
 
-			float G = __expf(power);
-			int gid = collected_id[j];
+			bool valid = inside && (power <= 0.0f);
+			float G = valid ? __expf(power) : 0.0f;
 
-			// dot(color, dL_dC)
+			// dot(color, dL_dC) using shared memory colors
 			float dot_c_dLdC = 0.0f;
-			for (int ch = 0; ch < CHANNELS; ch++)
-				dot_c_dLdC += colors[gid * CHANNELS + ch] * dL_dC[ch];
+			if (valid)
+			{
+				for (int ch = 0; ch < CHANNELS; ch++)
+					dot_c_dLdC += collected_colors[j * CHANNELS + ch] * dL_dC[ch];
+			}
 
-			// dL/dG = w * dot(c, dL_dC)
 			float dL_dG = w * dot_c_dLdC;
-			// dL/dpower = dL_dG * G  (since G = exp(power), dG/dpower = G)
 			float dL_dpower = dL_dG * G;
 
-			// ---- Gradients w.r.t. precision matrix (conic) ----
-			// power = -0.5*(p00*dx^2 + 2*p01*dx*dy + p11*dy^2)
-			atomicAdd(&dL_dconics[gid * 3 + 0], dL_dpower * (-0.5f) * d.x * d.x);
-			atomicAdd(&dL_dconics[gid * 3 + 1], dL_dpower * (-1.0f) * d.x * d.y);
-			atomicAdd(&dL_dconics[gid * 3 + 2], dL_dpower * (-0.5f) * d.y * d.y);
+			// Per-thread gradient contributions (0 when !valid)
+			float g_c0 = dL_dpower * (-0.5f) * d.x * d.x;
+			float g_c1 = dL_dpower * (-1.0f) * d.x * d.y;
+			float g_c2 = dL_dpower * (-0.5f) * d.y * d.y;
+			float g_m0 = dL_dpower * -(p00 * d.x + p01 * d.y);
+			float g_m1 = dL_dpower * -(p01 * d.x + p11 * d.y);
+			float g_w  = G * dot_c_dLdC;
+			float wG   = w * G;
 
-			// ---- Gradients w.r.t. 2D mean position ----
-			// d = mean - pixel, so dpower/d(mean_x) = -(p00*dx + p01*dy)
-			atomicAdd(&dL_dmeans2D[gid * 2 + 0], dL_dpower * -(p00 * d.x + p01 * d.y));
-			atomicAdd(&dL_dmeans2D[gid * 2 + 1], dL_dpower * -(p01 * d.x + p11 * d.y));
+			// Warp-level reduction: sum across 32 lanes, ~32x fewer atomicAdd
+			#pragma unroll
+			for (int offset = 16; offset > 0; offset >>= 1)
+			{
+				g_c0 += __shfl_down_sync(0xFFFFFFFF, g_c0, offset);
+				g_c1 += __shfl_down_sync(0xFFFFFFFF, g_c1, offset);
+				g_c2 += __shfl_down_sync(0xFFFFFFFF, g_c2, offset);
+				g_m0 += __shfl_down_sync(0xFFFFFFFF, g_m0, offset);
+				g_m1 += __shfl_down_sync(0xFFFFFFFF, g_m1, offset);
+				g_w  += __shfl_down_sync(0xFFFFFFFF, g_w, offset);
+			}
 
-			// ---- Gradient w.r.t. combined weight ----
-			// C[ch] += color[ch] * w * G  =>  dL/dw = G * dot(c, dL_dC)
-			atomicAdd(&dL_dweights[gid], G * dot_c_dLdC);
+			int gid = collected_id[j];
+			if (lane == 0)
+			{
+				atomicAdd(&dL_dconics[gid * 3 + 0], g_c0);
+				atomicAdd(&dL_dconics[gid * 3 + 1], g_c1);
+				atomicAdd(&dL_dconics[gid * 3 + 2], g_c2);
+				atomicAdd(&dL_dmeans2D[gid * 2 + 0], g_m0);
+				atomicAdd(&dL_dmeans2D[gid * 2 + 1], g_m1);
+				atomicAdd(&dL_dweights[gid], g_w);
+			}
 
-			// ---- Gradients w.r.t. color ----
-			// C[ch] += color[ch] * w * G  =>  dL/dcolor[ch] = w * G * dL_dC[ch]
-			float wG = w * G;
+			// Color gradients: warp reduce per channel
 			for (int ch = 0; ch < CHANNELS; ch++)
-				atomicAdd(&dL_dcolors[gid * CHANNELS + ch], wG * dL_dC[ch]);
+			{
+				float g_color = wG * dL_dC[ch];
+				#pragma unroll
+				for (int offset = 16; offset > 0; offset >>= 1)
+					g_color += __shfl_down_sync(0xFFFFFFFF, g_color, offset);
+				if (lane == 0)
+					atomicAdd(&dL_dcolors[gid * CHANNELS + ch], g_color);
+			}
 		}
 		block.sync();
 	}
@@ -130,9 +162,10 @@ void BACKWARD::render(
 	float* dL_dmeans2D,
 	float* dL_dconics,
 	float* dL_dweights,
-	float* dL_dcolors)
+	float* dL_dcolors,
+	cudaStream_t stream)
 {
-	renderBackwardCUDA<NUM_CHANNELS><<<grid, block>>>(
+	renderBackwardCUDA<NUM_CHANNELS><<<grid, block, 0, stream>>>(
 		ranges, point_list,
 		W, H, means2D, conic_weight, colors,
 		dL_dpixels,

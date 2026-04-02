@@ -175,9 +175,10 @@ void FORWARD::preprocess(int P,
 	float2* means2D_packed,
 	float4* conic_weight,
 	const dim3 grid,
-	uint32_t* tiles_touched)
+	uint32_t* tiles_touched,
+	cudaStream_t stream)
 {
-	preprocessCUDA<<<(P + 255) / 256, 256>>>(
+	preprocessCUDA<<<(P + 255) / 256, 256, 0, stream>>>(
 		P, means2D, conics, weights,
 		W, H, radii, means2D_packed, conic_weight,
 		grid, tiles_touched);
@@ -191,9 +192,10 @@ void FORWARD::render(
 	const float2* means2D,
 	const float* colors,
 	const float4* conic_weight,
-	float* out_color)
+	float* out_color,
+	cudaStream_t stream)
 {
-	renderCUDA<NUM_CHANNELS><<<grid, block>>>(
+	renderCUDA<NUM_CHANNELS><<<grid, block, 0, stream>>>(
 		ranges, point_list,
 		W, H, means2D, colors, conic_weight,
 		out_color);

@@ -23,7 +23,8 @@ namespace BACKWARD
 		float* dL_dmeans2D,
 		float* dL_dconics,
 		float* dL_dweights,
-		float* dL_dcolors);
+		float* dL_dcolors,
+		cudaStream_t stream = nullptr);
 }
 
 #endif

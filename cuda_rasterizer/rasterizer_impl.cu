@@ -264,7 +264,8 @@ void CudaRasterizer::Rasterizer::backward(
 	float* dL_dconics,
 	float* dL_dweights,
 	float* dL_dcolors,
-	bool debug)
+	bool debug,
+	cudaStream_t stream)
 {
 	// Recover state from buffers
 	GeometryState geomState = GeometryState::fromChunk(geom_buffer, P);
@@ -289,7 +290,8 @@ void CudaRasterizer::Rasterizer::backward(
 		dL_dmeans2D,
 		dL_dconics,
 		dL_dweights,
-		dL_dcolors), debug)
+		dL_dcolors,
+		stream), debug)
 
 	// No BACKWARD::preprocess needed — no 3D projection to backprop through.
 	// Gradients w.r.t. original model params (scaling, rotation, xyz) are

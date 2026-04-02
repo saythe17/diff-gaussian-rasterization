@@ -111,6 +111,84 @@ class _RasterizeGaussians(torch.autograd.Function):
         return grads
 
 
+class _RasterizeGaussiansBatch(torch.autograd.Function):
+    """Batched rasterization: T frames in one forward/backward call."""
+
+    @staticmethod
+    def forward(ctx, means2D_batch, conics_batch, weights, colors_batch, raster_settings):
+        """
+        Args:
+            means2D_batch: (T, N, 2)
+            conics_batch:  (T, N, 3)
+            weights:       (N,)     shared across frames
+            colors_batch:  (T, N, 3) per-frame colors
+        Returns:
+            out_colors: (T, 3, H, W)
+            radii_batch: (T, N)
+        """
+        args = (
+            means2D_batch,
+            conics_batch,
+            weights,
+            colors_batch,
+            raster_settings.image_height,
+            raster_settings.image_width,
+            raster_settings.debug,
+        )
+
+        out_colors, radii_batch, \
+            geomBuffers, num_rendered, binningBuffers, imgBuffers = \
+            _C.rasterize_gaussians_batch(*args)
+
+        ctx.raster_settings = raster_settings
+        ctx.num_rendered = num_rendered
+        ctx.geomBuffers = geomBuffers
+        ctx.binningBuffers = binningBuffers
+        ctx.imgBuffers = imgBuffers
+        ctx.save_for_backward(means2D_batch, conics_batch, weights, colors_batch, radii_batch)
+        return out_colors, radii_batch
+
+    @staticmethod
+    def backward(ctx, grad_out_colors, _):
+        num_rendered = ctx.num_rendered
+        raster_settings = ctx.raster_settings
+        geomBuffers = ctx.geomBuffers
+        binningBuffers = ctx.binningBuffers
+        imgBuffers = ctx.imgBuffers
+        means2D_batch, conics_batch, weights, colors_batch, radii_batch = ctx.saved_tensors
+
+        grad_means2D_batch, grad_conics_batch, grad_weights, grad_colors_batch = \
+            _C.rasterize_gaussians_batch_backward(
+                means2D_batch,
+                conics_batch,
+                weights,
+                colors_batch,
+                radii_batch,
+                grad_out_colors,
+                geomBuffers,
+                num_rendered,
+                binningBuffers,
+                imgBuffers,
+                raster_settings.image_height,
+                raster_settings.image_width,
+                raster_settings.debug,
+            )
+
+        return (
+            grad_means2D_batch,
+            grad_conics_batch,
+            grad_weights,
+            grad_colors_batch,
+            None,  # raster_settings
+        )
+
+
+def rasterize_gaussians_batch(means2D_batch, conics_batch, weights, colors_batch, raster_settings):
+    return _RasterizeGaussiansBatch.apply(
+        means2D_batch, conics_batch, weights, colors_batch, raster_settings,
+    )
+
+
 class GaussianRasterizationSettings(NamedTuple):
     image_height: int
     image_width: int
@@ -140,5 +218,23 @@ class GaussianRasterizer(nn.Module):
             conics,
             weights,
             colors,
+            self.raster_settings,
+        )
+
+    def forward_batch(self, means2D_batch, conics_batch, weights, colors_batch):
+        """Batched rasterization: T frames at once.
+
+        Args:
+            means2D_batch: (T, N, 2)
+            conics_batch:  (T, N, 3)
+            weights:       (N,)
+            colors_batch:  (T, N, 3) per-frame colors
+
+        Returns:
+            out_colors: (T, 3, H, W)
+            radii_batch: (T, N)
+        """
+        return rasterize_gaussians_batch(
+            means2D_batch, conics_batch, weights, colors_batch,
             self.raster_settings,
         )

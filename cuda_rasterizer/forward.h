@@ -21,7 +21,8 @@ namespace FORWARD
 		float2* means2D_packed,     // output: float2 packed
 		float4* conic_weight,       // output: (p00, p01, p11, w) packed
 		const dim3 grid,
-		uint32_t* tiles_touched);
+		uint32_t* tiles_touched,
+		cudaStream_t stream = nullptr);
 
 	// Tile-based additive rendering.
 	void render(
@@ -32,7 +33,8 @@ namespace FORWARD
 		const float2* means2D,
 		const float* colors,
 		const float4* conic_weight,
-		float* out_color);
+		float* out_color,
+		cudaStream_t stream = nullptr);
 }
 
 #endif
