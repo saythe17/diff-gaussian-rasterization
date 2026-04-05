@@ -245,6 +245,7 @@ RasterizeAdditiveBatchForwardCUDA(
 	const torch::Tensor& conics_batch,    // (T, P, 3)
 	const torch::Tensor& weights,         // (P,)
 	const torch::Tensor& colors_batch,    // (T, P, 3) per-frame colors
+	const torch::Tensor& temporal_weights, // (T, P) per-frame temporal weight
 	const int image_height,
 	const int image_width,
 	const bool debug)
@@ -349,11 +350,12 @@ RasterizeAdditiveBatchForwardCUDA(
 
 		cudaStream_t stream = fwd_stream_pool[t];
 
-		// 1. Preprocess
+		// 1. Preprocess (with temporal culling)
+		const float* tw_ptr = temporal_weights.defined() ? temporal_weights[t].contiguous().data<float>() : nullptr;
 		FORWARD::preprocess(
 			P, means2D_ptr, conics_ptr, weights_ptr,
 			W, H, radii_ptr, geomStates[t].means2D, geomStates[t].conic_weight,
-			tile_grid, geomStates[t].tiles_touched, stream);
+			tile_grid, geomStates[t].tiles_touched, tw_ptr, stream);
 
 		// 2. Prefix sum
 		cub::DeviceScan::InclusiveSum(
@@ -369,6 +371,7 @@ RasterizeAdditiveBatchForwardCUDA(
 	// ---- Sync point: wait for all Phase 1 to finish ----
 	for (int t = 0; t < T; t++)
 		cudaStreamSynchronize(fwd_stream_pool[t]);
+
 
 	// ---- Phase 2: duplicate + sort + render (streamed) ----
 	for (int t = 0; t < T; t++)

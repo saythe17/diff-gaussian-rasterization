@@ -42,6 +42,7 @@ RasterizeAdditiveBatchForwardCUDA(
 	const torch::Tensor& conics_batch,    // (T, P, 3)
 	const torch::Tensor& weights,         // (P,)
 	const torch::Tensor& colors_batch,    // (T, P, 3) per-frame colors
+	const torch::Tensor& temporal_weights, // (T, P) per-frame temporal weight
 	const int image_height,
 	const int image_width,
 	const bool debug);

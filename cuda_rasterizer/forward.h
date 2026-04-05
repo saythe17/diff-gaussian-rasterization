@@ -22,6 +22,7 @@ namespace FORWARD
 		float4* conic_weight,       // output: (p00, p01, p11, w) packed
 		const dim3 grid,
 		uint32_t* tiles_touched,
+		const float* temporal_weights = nullptr,  // (P,) per-frame temporal weight (nullable)
 		cudaStream_t stream = nullptr);
 
 	// Tile-based additive rendering.

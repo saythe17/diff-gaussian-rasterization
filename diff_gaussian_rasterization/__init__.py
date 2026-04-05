@@ -115,7 +115,7 @@ class _RasterizeGaussiansBatch(torch.autograd.Function):
     """Batched rasterization: T frames in one forward/backward call."""
 
     @staticmethod
-    def forward(ctx, means2D_batch, conics_batch, weights, colors_batch, raster_settings):
+    def forward(ctx, means2D_batch, conics_batch, weights, colors_batch, temporal_weights, raster_settings):
         """
         Args:
             means2D_batch: (T, N, 2)
@@ -131,6 +131,7 @@ class _RasterizeGaussiansBatch(torch.autograd.Function):
             conics_batch,
             weights,
             colors_batch,
+            temporal_weights,
             raster_settings.image_height,
             raster_settings.image_width,
             raster_settings.debug,
@@ -179,13 +180,14 @@ class _RasterizeGaussiansBatch(torch.autograd.Function):
             grad_conics_batch,
             grad_weights,
             grad_colors_batch,
+            None,  # temporal_weights (no grad needed)
             None,  # raster_settings
         )
 
 
-def rasterize_gaussians_batch(means2D_batch, conics_batch, weights, colors_batch, raster_settings):
+def rasterize_gaussians_batch(means2D_batch, conics_batch, weights, colors_batch, temporal_weights, raster_settings):
     return _RasterizeGaussiansBatch.apply(
-        means2D_batch, conics_batch, weights, colors_batch, raster_settings,
+        means2D_batch, conics_batch, weights, colors_batch, temporal_weights, raster_settings,
     )
 
 
@@ -221,7 +223,7 @@ class GaussianRasterizer(nn.Module):
             self.raster_settings,
         )
 
-    def forward_batch(self, means2D_batch, conics_batch, weights, colors_batch):
+    def forward_batch(self, means2D_batch, conics_batch, weights, colors_batch, temporal_weights=None):
         """Batched rasterization: T frames at once.
 
         Args:
@@ -236,5 +238,5 @@ class GaussianRasterizer(nn.Module):
         """
         return rasterize_gaussians_batch(
             means2D_batch, conics_batch, weights, colors_batch,
-            self.raster_settings,
+            temporal_weights, self.raster_settings,
         )

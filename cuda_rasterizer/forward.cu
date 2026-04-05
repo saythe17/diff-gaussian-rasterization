@@ -25,7 +25,8 @@ __global__ void preprocessCUDA(
 	float2* __restrict__ means2D_packed,
 	float4* __restrict__ conic_weight,
 	const dim3 grid,
-	uint32_t* __restrict__ tiles_touched)
+	uint32_t* __restrict__ tiles_touched,
+	const float* __restrict__ temporal_weights)
 {
 	auto idx = cg::this_grid().thread_rank();
 	if (idx >= P)
@@ -34,6 +35,10 @@ __global__ void preprocessCUDA(
 	// Initialize to invisible
 	radii[idx] = 0;
 	tiles_touched[idx] = 0;
+
+	// Temporal culling: skip if temporal weight is negligible
+	if (temporal_weights && temporal_weights[idx] < 0.01f)
+		return;
 
 	// Read pixel-space position
 	float px = means2D[idx * 2 + 0];
@@ -176,12 +181,13 @@ void FORWARD::preprocess(int P,
 	float4* conic_weight,
 	const dim3 grid,
 	uint32_t* tiles_touched,
+	const float* temporal_weights,
 	cudaStream_t stream)
 {
 	preprocessCUDA<<<(P + 255) / 256, 256, 0, stream>>>(
 		P, means2D, conics, weights,
 		W, H, radii, means2D_packed, conic_weight,
-		grid, tiles_touched);
+		grid, tiles_touched, temporal_weights);
 }
 
 void FORWARD::render(
